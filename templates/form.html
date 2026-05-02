@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IPL Entry</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+
+<!-- LOADER -->
+<div id="loader">
+    <div class="loader-content">
+        <div class="spinner"></div>
+        <h2>Connecting to Live Match...</h2>
+    </div>
+</div>
+
+<div class="main-container">
+
+    <div class="hero">
+        <img src="{{ url_for('static', filename='images/logo.jpeg') }}" class="logo">
+
+        <div class="hero-text">
+            <h1>IPL LIVE SCREENING</h1>
+            <p>YMCA GROUND</p>
+        </div>
+
+        <img src="{{ url_for('static', filename='images/player.png') }}" class="player">
+    </div>
+
+    <div class="card">
+
+        <h2>ENTRY REGISTRATION</h2>
+
+        <form method="POST" action="/submit">
+
+            <div class="input-box">
+                <span>👤</span>
+                <input type="text" name="name" required placeholder="Full Name">
+            </div>
+
+            <div class="input-box">
+                <span><img src="{{ url_for('static', filename='images/insta.png') }}" class="insta-icon"></span>
+                <input type="text" name="insta" required placeholder="Instagram Username">
+            </div>
+
+            <div class="input-box">
+                <span>📱</span>
+                <input type="tel" id="mobile" name="mobile"
+                       pattern="[0-9]{10}" maxlength="10"
+                       required placeholder="Mobile Number">
+            </div>
+
+            <div class="insta-section">
+
+                <a href="{{ insta }}" target="_blank" id="instaBtn" class="insta-btn">
+                    <img src="{{ url_for('static', filename='images/insta.png') }}" class="insta-icon"> FOLLOW US
+                </a>
+
+                <div id="followQuestion" class="follow-box">
+                    <p>Did you follow?</p>
+                    <div class="options">
+                        <button type="button" onclick="selectFollow('yes')" class="yes">Yes</button>
+                        <button type="button" onclick="selectFollow('no')" class="no">No</button>
+                    </div>
+                </div>
+
+                <p id="statusText">Click follow to continue</p>
+
+            </div>
+
+            <input type="hidden" name="follow_status" id="followStatus">
+
+            <button type="submit" id="submitBtn" disabled>
+                Submit Entry
+            </button>
+
+        </form>
+
+    </div>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/script.js') }}"></script>
+
+</body>
+</html>

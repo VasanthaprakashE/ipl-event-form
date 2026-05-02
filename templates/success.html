@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Success</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+
+<div class="success-container">
+    <div class="success-card">
+        <div class="check">✔</div>
+        <h1>Thank You!</h1>
+        <p>Registration Successful</p>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+
+<script>
+setTimeout(() => {
+    confetti();
+}, 500);
+</script>
+
+</body>
+</html>
