@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IPL Analytics Dashboard | Admin</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0/dist/chartjs-plugin-datalabels.min.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+</head>
+<body>
+
+<div class="overlay"></div>
+
+<div class="header">
+    <div class="header-title">
+        🏏 IPL EVENT DASHBOARD
+    </div>
+    <div class="header-controls">
+        <button id="refreshBtn" class="refresh-btn">
+            🔄 Refresh
+        </button>
+        <label class="auto-refresh-label">
+            <input type="checkbox" id="autoRefreshToggle"> 
+            Auto-refresh (30s)
+        </label>
+    </div>
+</div>
+
+<div class="container">
+    <!-- KPI CARDS -->
+    <div class="cards">
+        <div class="card">
+            <h1 id="totalCount">{{ total }}</h1>
+            <p>Total Entries</p>
+        </div>
+        <div class="card">
+            <h1 id="yesCount">{{ yes }}</h1>
+            <p>Followers</p>
+        </div>
+        <div class="card">
+            <h1 id="noCount">{{ no }}</h1>
+            <p>Non Followers</p>
+        </div>
+    </div>
+
+    <!-- LAST UPDATED -->
+    <div class="last-updated">
+        <span id="lastUpdatedTime">📅 Last updated: Just now</span>
+        <span id="autoRefreshStatus" class="auto-refresh-status"></span>
+    </div>
+
+    <!-- FILTER SECTION -->
+    <div class="filter-section">
+        <div class="filter-header" id="filterHeader">
+            <h3>🔍 Filter Dashboard Data</h3>
+            <button id="toggleFilters" class="toggle-filters">Hide Filters ▲</button>
+        </div>
+        <div class="filter-controls" id="filterControls">
+            <div class="filter-group">
+                <label>📅 Date Range Filter</label>
+                <div class="date-inputs">
+                    <input type="date" id="dashboardFromDate" placeholder="From Date">
+                    <span>→</span>
+                    <input type="date" id="dashboardToDate" placeholder="To Date">
+                    <button id="applyDateFilter" class="apply-filter">Apply</button>
+                    <button id="clearDateFilter" class="clear-filter">Clear</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CHARTS SECTION -->
+    <div class="charts">
+        <div class="chart-box">
+            <h3>Overall Follow Status</h3>
+            <canvas id="pieChart"></canvas>
+        </div>
+        <div class="chart-box">
+            <h3>Daily Followers vs Non-followers</h3>
+            <canvas id="dailyChart"></canvas>
+        </div>
+    </div>
+
+    <!-- DATA TABLE SECTION -->
+    <div class="data-section">
+        <div class="data-header">
+            <h3>📋 Entries Data</h3>
+            <div class="data-controls">
+                <div class="search-wrapper">
+                    <input type="text" id="searchInput" placeholder="Search by name, mobile or Instagram...">
+                    <button id="clearSearch" class="clear-search">✕</button>
+                </div>
+                <div class="export-wrapper">
+                    <button id="exportBtn" class="export-btn">📊 Export to Excel</button>
+                    <div class="export-options" id="exportOptions">
+                        <div class="export-header">
+                            <strong>Export Options</strong>
+                            <button id="closeExport" class="close-export">✕</button>
+                        </div>
+                        <div class="export-body">
+                            <div class="export-option">
+                                <label>📅 Filter by date range:</label>
+                                <input type="date" id="exportFromDate">
+                                <input type="date" id="exportToDate">
+                            </div>
+                            <div class="export-actions">
+                                <button id="exportCurrentView" class="export-option-btn">Export Current View</button>
+                                <button id="exportAllData" class="export-option-btn primary">Export All Data</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="table-container">
+            <div class="loading-overlay" id="loadingOverlay">
+                <div class="spinner"></div>
+                <p>Loading data...</p>
+            </div>
+            <table id="dataTable">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Instagram</th>
+                        <th>Mobile</th>
+                        <th>Status</th>
+                        <th>Date & Time</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                    {% for row in entries %}
+                    <tr data-status="{{ row.status }}" data-date="{{ row.date }}">
+                        <td>{{ row.id }}</td>
+                        <td>{{ row.name }}</td>
+                        <td>{{ row.instagram }}</td>
+                        <td>{{ row.mobile }}</td>
+                        <td class="{{ 'yes' if row.status == 'yes' else 'no' }}">
+                            {{ '✓ Follower' if row.status == 'yes' else '✗ Non-Follower' }}
+                        </td>
+                        <td>{{ row.time }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <div id="noResults" class="no-results">No results found</div>
+        </div>
+        
+        <div class="result-count">
+            Showing <span id="visibleCount">0</span> of <span id="totalEntries">{{ total }}</span> entries
+        </div>
+    </div>
+</div>
+
+<script>
+    // Data from Flask
+    const YES_COUNT = Number({{ yes | default(0) }});
+    const NO_COUNT = Number({{ no | default(0) }});
+    const DAILY_DATA = {{ daily | default({}) | tojson }};
+    const TOTAL_ENTRIES = {{ total | default(0) }};
+</script>
+
+<script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+</body>
+</html>
