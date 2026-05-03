@@ -1,115 +1,198 @@
+import os
+import sys
 import pandas as pd
-from flask import Flask, render_template, request, send_file, jsonify
-from db import create_table, insert_data, get_all_entries
-import io
-import openpyxl
+from flask import Flask, render_template, request, send_file, jsonify, session, redirect, url_for, flash
+from functools import wraps
 from collections import defaultdict
-from datetime import datetime
-import traceback
+from datetime import datetime, timedelta
+import io
 import logging
 
+# Add current directory to path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Import database functions
+from db import (
+    create_table, insert_data, get_all_entries,
+    create_first_admin, verify_admin_login,
+    create_login_history_table, log_login_attempt,
+    get_login_history, get_current_sessions
+)
+
 # Setup logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# Session configuration
+app.secret_key = os.environ.get('SECRET_KEY', os.urandom(32))
+app.permanent_session_lifetime = timedelta(minutes=30)
+app.config.update(
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    PERMANENT_SESSION_LIFETIME=timedelta(minutes=30)
+)
+
 INSTAGRAM_URL = "https://www.instagram.com/urbasersumeet/"
 
-# Create table on startup
+# Initialize database
 try:
     create_table()
-    logger.info("Database table created/verified successfully")
+    create_login_history_table()
+    create_first_admin()
+    logger.info("✅ Database initialized successfully")
 except Exception as e:
-    logger.error(f"Database initialization error: {e}")
+    logger.error(f"❌ Database error: {e}")
 
+# Rate limiting
+login_attempts = {}
+
+def is_rate_limited(ip):
+    if ip in login_attempts:
+        attempts, timestamp = login_attempts[ip]
+        if datetime.now().timestamp() - timestamp < 900:
+            if attempts >= 5:
+                return True
+        else:
+            login_attempts[ip] = [0, datetime.now().timestamp()]
+    else:
+        login_attempts[ip] = [0, datetime.now().timestamp()]
+    return False
+
+def record_login_attempt(ip, success=False):
+    if ip in login_attempts:
+        if success:
+            login_attempts[ip] = [0, datetime.now().timestamp()]
+        else:
+            login_attempts[ip][0] += 1
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            flash('⚠️ Please login to access the admin dashboard', 'warning')
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# ============ ROUTES ============
 
 @app.route("/")
 def home():
-    """Home page with form"""
     try:
         return render_template("form.html", insta=INSTAGRAM_URL)
     except Exception as e:
-        logger.error(f"Home route error: {e}")
-        return f"Error loading page: {e}", 500
-
+        logger.error(f"Home error: {e}")
+        return f"Error: {str(e)}", 500
 
 @app.route("/submit", methods=["POST"])
 def submit():
-    """Handle form submission"""
     try:
-        name = request.form.get("name")
-        insta = request.form.get("insta")
-        mobile = request.form.get("mobile")
-        follow_status = request.form.get("follow_status")
+        name = request.form.get("name", "").strip()
+        insta = request.form.get("insta", "").strip()
+        mobile = request.form.get("mobile", "").strip()
+        follow_status = request.form.get("follow_status", "").strip()
 
-        # VALIDATION
         if not name or not insta or not mobile or not follow_status:
             return "All fields are required", 400
 
         if not mobile.isdigit() or len(mobile) != 10:
             return "Invalid mobile number. Must be 10 digits.", 400
 
-        # Clean Instagram handle (remove @ if present)
-        insta = insta.strip().lstrip('@')
+        name = name.replace('<', '&lt;').replace('>', '&gt;')
+        insta = insta.lstrip('@').replace('<', '&lt;').replace('>', '&gt;')
         
-        # Insert data
         insert_data(name, insta, mobile, follow_status)
-        logger.info(f"New entry added: {name} - {follow_status}")
+        logger.info(f"✅ New submission: {name[:20]}")
         
         return render_template("success.html")
     
     except Exception as e:
-        logger.error(f"Submit route error: {e}")
-        logger.error(traceback.format_exc())
-        return f"Error submitting form: {e}", 500
+        logger.error(f"Submit error: {e}")
+        return f"Error: {str(e)}", 500
 
+@app.route("/login", methods=['GET', 'POST'])
+def login():
+    if session.get('logged_in'):
+        return redirect(url_for('admin'))
+    
+    client_ip = request.remote_addr
+    user_agent = request.headers.get('User-Agent', 'Unknown')
+    
+    if request.method == 'POST':
+        if is_rate_limited(client_ip):
+            flash('Too many login attempts. Please wait 15 minutes.', 'error')
+            return render_template('login.html')
+        
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        
+        admin = verify_admin_login(username, password, client_ip)
+        
+        if admin:
+            session.permanent = True
+            session['logged_in'] = True
+            session['user_id'] = admin['id']
+            session['username'] = admin['username']
+            session['role'] = admin['role']
+            session['login_time'] = datetime.now().isoformat()
+            
+            log_login_attempt(username, 'login', client_ip, user_agent, 'success', admin['id'])
+            record_login_attempt(client_ip, success=True)
+            
+            logger.info(f"✅ Login: {username} from {client_ip}")
+            flash(f'✅ Welcome back, {username}!', 'success')
+            return redirect(url_for('admin'))
+        else:
+            log_login_attempt(username, 'login', client_ip, user_agent, 'failed', None)
+            record_login_attempt(client_ip, success=False)
+            logger.warning(f"❌ Failed login: {username} from {client_ip}")
+            flash('❌ Invalid username or password!', 'error')
+    
+    return render_template('login.html')
 
-@app.route("/admin")
+@app.route("/logout")
+def logout():
+    username = session.get('username', 'Unknown')
+    user_id = session.get('user_id')
+    client_ip = request.remote_addr
+    user_agent = request.headers.get('User-Agent', 'Unknown')
+    
+    if user_id:
+        log_login_attempt(username, 'logout', client_ip, user_agent, 'success', user_id)
+    
+    logger.info(f"User {username} logged out")
+    session.clear()
+    flash('✅ Logged out successfully', 'success')
+    return redirect(url_for('login'))
+
+@app.route("/admin-dashboard")
+@login_required
 def admin():
-    """Admin dashboard"""
     try:
-        key = request.args.get("key")
-        if key != "1234":
-            return "Unauthorized Access", 401
-
-        # Get all entries
         data = get_all_entries()
-        logger.debug(f"Retrieved {len(data)} entries from database")
         
         if not data:
-            # Return empty dashboard
-            return render_template(
-                "admin.html",
-                entries=[],
-                yes=0,
-                no=0,
-                total=0,
-                daily={}
-            )
+            return render_template("admin.html", entries=[], yes=0, no=0, total=0, daily={}, username=session.get('username'))
         
-        # Calculate stats
-        # Data structure: (id, name, insta, mobile, follow_status, created_at)
         yes_count = sum(1 for d in data if d[4] == "yes")
         no_count = sum(1 for d in data if d[4] == "no")
         
-        # DATE-WISE GROUPING
         daily = defaultdict(lambda: {"yes": 0, "no": 0})
-        
-        # Format entries for JSON serialization
         formatted_entries = []
+        
         for d in data:
             try:
-                # Handle date formatting from created_at field (index 5)
                 created_at = str(d[5]) if d[5] else ""
                 date = created_at[:10] if len(created_at) >= 10 else datetime.now().strftime("%Y-%m-%d")
                 
-                if d[4] == "yes":  # follow_status is at index 4
+                if d[4] == "yes":
                     daily[date]["yes"] += 1
                 else:
                     daily[date]["no"] += 1
                 
-                # Format entry for template
                 formatted_entries.append({
                     "id": d[0],
                     "name": str(d[1]),
@@ -120,16 +203,9 @@ def admin():
                     "date": date
                 })
             except Exception as e:
-                logger.error(f"Error formatting entry {d}: {e}")
                 continue
         
-        # Sort entries by ID descending (newest first)
         formatted_entries.sort(key=lambda x: x['id'], reverse=True)
-        
-        # Convert daily to regular dict for JSON
-        daily_dict = dict(daily)
-        
-        logger.info(f"Dashboard loaded: Total={len(data)}, Yes={yes_count}, No={no_count}")
         
         return render_template(
             "admin.html",
@@ -137,78 +213,49 @@ def admin():
             yes=yes_count,
             no=no_count,
             total=len(data),
-            daily=daily_dict
+            daily=dict(daily),
+            username=session.get('username')
         )
     
     except Exception as e:
-        logger.error(f"Admin route error: {e}")
-        logger.error(traceback.format_exc())
-        return f"Error loading admin dashboard: {e}", 500
+        logger.error(f"Admin error: {e}")
+        return f"Error: {str(e)}", 500
 
+@app.route("/login-history")
+@login_required
+def login_history():
+    history = get_login_history(100)
+    active_sessions = get_current_sessions()
+    return render_template('login_history.html', history=history, active_sessions=active_sessions, username=session.get('username'))
 
 @app.route("/export")
+@login_required
 def export():
-    """Export data to Excel"""
     try:
-        key = request.args.get("key")
-        if key != "1234":
-            return jsonify({"error": "Unauthorized"}), 401
-
-        from_date = request.args.get("from")
-        to_date = request.args.get("to")
+        from_date = request.args.get("from", "")
+        to_date = request.args.get("to", "")
         
-        logger.info(f"Export requested: from={from_date}, to={to_date}")
-        
-        # Get all entries
         data = get_all_entries()
         
         if not data:
-            # Return empty Excel
             df = pd.DataFrame(columns=["ID", "Name", "Instagram", "Mobile", "Status", "Created At"])
         else:
-            # FILTER BY DATE RANGE
             filtered_data = []
             for d in data:
-                try:
-                    # created_at is at index 5
-                    date_str = str(d[5])[:10] if d[5] else ""
-                    if from_date and to_date:
-                        if from_date <= date_str <= to_date:
-                            filtered_data.append(d)
-                    else:
+                date_str = str(d[5])[:10] if d[5] else ""
+                if from_date and to_date:
+                    if from_date <= date_str <= to_date:
                         filtered_data.append(d)
-                except Exception as e:
-                    logger.error(f"Error filtering entry {d}: {e}")
-                    continue
+                else:
+                    filtered_data.append(d)
             
-            # CREATE DATAFRAME with correct column names
-            df = pd.DataFrame(filtered_data, columns=[
-                "ID", "Name", "Instagram", "Mobile", "Status", "Created At"
-            ])
+            df = pd.DataFrame(filtered_data, columns=["ID", "Name", "Instagram", "Mobile", "Status", "Created At"])
         
-        # EXPORT TO EXCEL
         output = io.BytesIO()
-        
-        # Use openpyxl engine for better Excel formatting
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Data')
-            
-            # Auto-adjust column widths
-            worksheet = writer.sheets['Data']
-            for column in df:
-                column_width = max(df[column].astype(str).map(len).max(), len(column))
-                col_idx = df.columns.get_loc(column)
-                worksheet.column_dimensions[chr(65 + col_idx)].width = min(column_width + 2, 50)
-        
+        df.to_excel(output, index=False, engine='openpyxl')
         output.seek(0)
         
-        # Generate filename
-        if from_date and to_date:
-            filename = f"filtered_data_{from_date}_to_{to_date}.xlsx"
-        else:
-            filename = f"all_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        
-        logger.info(f"Export successful: {len(df)} records exported to {filename}")
+        filename = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         
         return send_file(
             output,
@@ -218,84 +265,56 @@ def export():
         )
     
     except Exception as e:
-        logger.error(f"Export route error: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": f"Export failed: {str(e)}"}), 500
-
+        logger.error(f"Export error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/filtered-data")
+@login_required
 def api_filtered_data():
-    """API endpoint for filtered dashboard data (AJAX)"""
     try:
-        key = request.args.get("key")
-        if key != "1234":
-            return jsonify({"error": "Unauthorized"}), 401
-        
-        from_date = request.args.get("from")
-        to_date = request.args.get("to")
+        from_date = request.args.get("from", "")
+        to_date = request.args.get("to", "")
         search = request.args.get("search", "").lower().strip()
         
-        logger.debug(f"API filtered data request: from={from_date}, to={to_date}, search={search}")
-        
-        # Get all entries
         data = get_all_entries()
         
         if not data:
-            return jsonify({
-                "entries": [],
-                "yes": 0,
-                "no": 0,
-                "total": 0,
-                "daily": {}
-            })
+            return jsonify({"entries": [], "yes": 0, "no": 0, "total": 0, "daily": {}})
         
-        # Apply filters
         filtered_data = []
         for d in data:
-            try:
-                # created_at is at index 5
-                date_str = str(d[5])[:10] if d[5] else ""
-                
-                # Date filter
-                if from_date and to_date:
-                    if not (from_date <= date_str <= to_date):
-                        continue
-                
-                # Search filter (search in name, insta, mobile)
-                if search:
-                    name_match = search in str(d[1]).lower()
-                    insta_match = search in str(d[2]).lower()
-                    mobile_match = search in str(d[3]).lower()
-                    
-                    if not (name_match or insta_match or mobile_match):
-                        continue
-                
-                filtered_data.append({
-                    "id": d[0],
-                    "name": str(d[1]),
-                    "instagram": str(d[2]),
-                    "mobile": str(d[3]),
-                    "status": d[4],
-                    "time": str(d[5]) if d[5] else "",
-                    "date": date_str
-                })
-            except Exception as e:
-                logger.error(f"Error processing entry {d}: {e}")
-                continue
+            date_str = str(d[5])[:10] if d[5] else ""
+            
+            if from_date and to_date:
+                if not (from_date <= date_str <= to_date):
+                    continue
+            
+            if search:
+                name_match = search in str(d[1]).lower()
+                insta_match = search in str(d[2]).lower()
+                mobile_match = search in str(d[3]).lower()
+                if not (name_match or insta_match or mobile_match):
+                    continue
+            
+            filtered_data.append({
+                "id": d[0],
+                "name": str(d[1]),
+                "instagram": str(d[2]),
+                "mobile": str(d[3]),
+                "status": d[4],
+                "time": str(d[5]) if d[5] else "",
+                "date": date_str
+            })
         
-        # Calculate stats
         yes_count = sum(1 for d in filtered_data if d["status"] == "yes")
         no_count = sum(1 for d in filtered_data if d["status"] == "no")
         
-        # Daily grouping
         daily = defaultdict(lambda: {"yes": 0, "no": 0})
         for d in filtered_data:
             if d["status"] == "yes":
                 daily[d["date"]]["yes"] += 1
             else:
                 daily[d["date"]]["no"] += 1
-        
-        logger.debug(f"API response: {len(filtered_data)} records, yes={yes_count}, no={no_count}")
         
         return jsonify({
             "entries": filtered_data,
@@ -306,56 +325,21 @@ def api_filtered_data():
         })
     
     except Exception as e:
-        logger.error(f"API filtered-data error: {e}")
-        logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
+@app.route("/health")
+def health():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}, 200
 
-@app.route("/api/stats")
-def api_stats():
-    """API endpoint for quick stats (for dashboard widgets)"""
-    try:
-        key = request.args.get("key")
-        if key != "1234":
-            return jsonify({"error": "Unauthorized"}), 401
-        
-        data = get_all_entries()
-        
-        total = len(data)
-        yes_count = sum(1 for d in data if d[4] == "yes")
-        no_count = sum(1 for d in data if d[4] == "no")
-        
-        # Get today's entries (created_at is at index 5)
-        today = datetime.now().strftime("%Y-%m-%d")
-        today_entries = sum(1 for d in data if str(d[5])[:10] == today)
-        
-        return jsonify({
-            "total": total,
-            "followers": yes_count,
-            "non_followers": no_count,
-            "today_entries": today_entries,
-            "conversion_rate": round((yes_count / total * 100), 2) if total > 0 else 0
-        })
-    
-    except Exception as e:
-        logger.error(f"API stats error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-# Error handlers
-@app.errorhandler(404)
-def not_found(error):
-    """Handle 404 errors"""
-    return jsonify({"error": "Resource not found"}), 404
-
-
-@app.errorhandler(500)
-def internal_error(error):
-    """Handle 500 errors"""
-    logger.error(f"Internal server error: {error}")
-    return jsonify({"error": "Internal server error"}), 500
-
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    return response
 
 if __name__ == "__main__":
-    # Run with debug mode for development
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+application = app

@@ -13,22 +13,19 @@
 <div class="overlay"></div>
 
 <div class="header">
-    <div class="header-title">
-        🏏 IPL EVENT DASHBOARD
-    </div>
+    <div class="header-title">🏏 IPL EVENT DASHBOARD</div>
     <div class="header-controls">
-        <button id="refreshBtn" class="refresh-btn">
-            🔄 Refresh
-        </button>
+        <span class="welcome-text">👋 Welcome, {{ username }}</span>
+        <a href="{{ url_for('login_history') }}" class="history-btn">📜 Login History</a>
+        <a href="{{ url_for('logout') }}" class="logout-btn">🚪 Logout</a>
+        <button id="refreshBtn" class="refresh-btn">🔄 Refresh</button>
         <label class="auto-refresh-label">
-            <input type="checkbox" id="autoRefreshToggle"> 
-            Auto-refresh (30s)
+            <input type="checkbox" id="autoRefreshToggle"> Auto-refresh (30s)
         </label>
     </div>
 </div>
 
 <div class="container">
-    <!-- KPI CARDS -->
     <div class="cards">
         <div class="card">
             <h1 id="totalCount">{{ total }}</h1>
@@ -44,13 +41,11 @@
         </div>
     </div>
 
-    <!-- LAST UPDATED -->
     <div class="last-updated">
         <span id="lastUpdatedTime">📅 Last updated: Just now</span>
         <span id="autoRefreshStatus" class="auto-refresh-status"></span>
     </div>
 
-    <!-- FILTER SECTION -->
     <div class="filter-section">
         <div class="filter-header" id="filterHeader">
             <h3>🔍 Filter Dashboard Data</h3>
@@ -70,7 +65,6 @@
         </div>
     </div>
 
-    <!-- CHARTS SECTION -->
     <div class="charts">
         <div class="chart-box">
             <h3>Overall Follow Status</h3>
@@ -82,7 +76,6 @@
         </div>
     </div>
 
-    <!-- DATA TABLE SECTION -->
     <div class="data-section">
         <div class="data-header">
             <h3>📋 Entries Data</h3>
