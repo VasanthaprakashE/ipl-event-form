@@ -1,229 +1,170 @@
-import os
-import sqlite3
+"""
+Database Layer - All data operations for IPL Event
+"""
+import hashlib
 from datetime import datetime
 import pytz
-import hashlib
+from gsheet import GSheet
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_NAME = os.path.join(BASE_DIR, "usersdata.db")
+# ===== CONFIGURATION =====
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyHnUEozHl8-E0DvgT-phu-iHXTGWrAie6746nesCNUUpbiVRYPltCkCrPvCZtccOFK/exec"
+API_KEY = "ipl2026eventdashboard"
+
+# Initialize Google Sheets connection
+db = GSheet(APPS_SCRIPT_URL, API_KEY)
+
+# ===== UTILITY FUNCTIONS =====
 
 def hash_password(password):
+    """Hash password using SHA-256"""
     return hashlib.sha256(password.encode()).hexdigest()
 
-def create_table():
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                insta TEXT,
-                mobile TEXT,
-                follow_status TEXT,
-                created_at TEXT
-            )
-        """)
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS admins (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                email TEXT,
-                role TEXT DEFAULT 'admin',
-                is_active INTEGER DEFAULT 1,
-                created_at TEXT,
-                last_login TEXT,
-                last_ip TEXT
-            )
-        """)
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Error creating tables: {e}")
-        return False
+def now_ist():
+    """Get current time in IST"""
+    tz = pytz.timezone("Asia/Kolkata")
+    return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
-def create_login_history_table():
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS login_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                admin_id INTEGER,
-                username TEXT,
-                action TEXT,
-                ip_address TEXT,
-                user_agent TEXT,
-                status TEXT,
-                timestamp TEXT
-            )
-        """)
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Error creating login history: {e}")
-        return False
+# ===== INITIALIZATION =====
 
-def create_first_admin():
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT COUNT(*) FROM admins")
-        count = cursor.fetchone()[0]
-        
-        if count == 0:
-            default_password = "admin123"
-            password_hash = hash_password(default_password)
-            tz = pytz.timezone("Asia/Kolkata")
-            now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-            
-            cursor.execute("""
-                INSERT INTO admins (username, password_hash, role, created_at)
-                VALUES (?, ?, ?, ?)
-            """, ('admin', password_hash, 'super_admin', now))
-            
-            conn.commit()
-            print("=" * 50)
-            print("⚠️ DEFAULT ADMIN CREATED!")
-            print("Username: admin")
-            print("Password: admin123")
-            print("=" * 50)
-        
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Error creating admin: {e}")
-        return False
+def init_database():
+    """Initialize database and create default admin if needed"""
+    result = db.count('admins')
+    if result.get('success') and result.get('data', {}).get('count', 0) == 0:
+        create_default_admin()
+    return True
 
-def insert_data(name, insta, mobile, follow_status):
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        tz = pytz.timezone("Asia/Kolkata")
-        now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-        
-        cursor.execute("""
-            INSERT INTO entries (name, insta, mobile, follow_status, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (name, insta, mobile, follow_status, now))
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Error inserting data: {e}")
-        return False
+def create_default_admin():
+    """Create default admin account"""
+    admin_data = {
+        'username': 'admin',
+        'password_hash': hash_password("admin123"),
+        'role': 'super_admin',
+        'is_active': '1',
+        'created_at': now_ist()
+    }
+    db.insert('admins', admin_data)
+    print("=" * 50)
+    print("🔑 DEFAULT ADMIN: admin / admin123")
+    print("=" * 50)
+
+# ===== ENTRY OPERATIONS =====
+
+def save_entry(name, insta, mobile, follow_status):
+    """Save a new registration entry"""
+    entry_data = {
+        'name': name,
+        'insta': insta,
+        'mobile': mobile,
+        'follow_status': follow_status,
+        'created_at': now_ist()
+    }
+    result = db.insert('entries', entry_data)
+    return result.get('success', False)
 
 def get_all_entries():
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM entries ORDER BY id DESC")
-        data = cursor.fetchall()
-        conn.close()
-        return data
-    except Exception as e:
-        print(f"Error fetching entries: {e}")
-        return []
+    """Get all registration entries"""
+    result = db.select('entries')
+    
+    if result.get('success') and result.get('data'):
+        return [
+            (
+                e.get('id', ''),
+                e.get('name', ''),
+                e.get('insta', ''),
+                e.get('mobile', ''),
+                e.get('follow_status', ''),
+                e.get('created_at', '')
+            ) for e in result['data']
+        ]
+    return []
+
+# ===== AUTH OPERATIONS =====
+
+def verify_login(username, password, ip_address):
+    """Verify admin login credentials"""
+    result = db.select('admins', query={
+        'username': username,
+        'password_hash': hash_password(password)
+    })
+    
+    if result.get('success') and result.get('data'):
+        admin = result['data'][0]
+        
+        # Update last login info
+        db.update('admins', admin['id'], {
+            'last_login': now_ist(),
+            'last_ip': ip_address
+        })
+        
+        return {
+            "id": admin['id'],
+            "username": admin['username'],
+            "role": admin.get('role', 'admin'),
+            "is_active": int(admin.get('is_active', 1))
+        }
+    return None
+
+# ===== LOGGING OPERATIONS =====
+
+def log_activity(username, action, ip_address, user_agent, status, admin_id=None):
+    """Log user activity"""
+    log_data = {
+        'admin_id': str(admin_id) if admin_id else '',
+        'username': username,
+        'action': action,
+        'ip_address': ip_address,
+        'user_agent': user_agent[:200] if user_agent else '',
+        'status': status,
+        'timestamp': now_ist()
+    }
+    result = db.insert('login_history', log_data)
+    return result.get('success', False)
+
+def get_activity_log(limit=100):
+    """Get recent activity logs"""
+    result = db.select('login_history', query={'limit': limit})
+    if result.get('success') and result.get('data'):
+        return result['data']
+    return []
+
+def get_active_sessions():
+    """Get currently active sessions"""
+    result = db.select('login_history', query={'limit': 50})
+    if result.get('success') and result.get('data'):
+        return [
+            {
+                "username": s.get('username', ''),
+                "ip_address": s.get('ip_address', ''),
+                "timestamp": s.get('timestamp', '')
+            }
+            for s in result['data']
+            if s.get('status') == 'success' and s.get('action') == 'login'
+        ]
+    return []
+
+# ===== COMPATIBILITY WRAPPERS =====
+# These maintain compatibility with your original code
+
+def create_table():
+    return init_database()
+
+def create_login_history_table():
+    return True
+
+def create_first_admin():
+    return create_default_admin()
+
+def insert_data(name, insta, mobile, follow_status):
+    return save_entry(name, insta, mobile, follow_status)
 
 def verify_admin_login(username, password, ip_address):
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        password_hash = hash_password(password)
-        
-        cursor.execute("""
-            SELECT id, username, role, is_active 
-            FROM admins 
-            WHERE username = ? AND password_hash = ? AND is_active = 1
-        """, (username, password_hash))
-        
-        admin = cursor.fetchone()
-        
-        if admin:
-            tz = pytz.timezone("Asia/Kolkata")
-            now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-            
-            cursor.execute("UPDATE admins SET last_login = ?, last_ip = ? WHERE id = ?", (now, ip_address, admin[0]))
-            conn.commit()
-            conn.close()
-            
-            return {"id": admin[0], "username": admin[1], "role": admin[2], "is_active": admin[3]}
-        
-        conn.close()
-        return None
-    except Exception as e:
-        print(f"Login error: {e}")
-        return None
+    return verify_login(username, password, ip_address)
 
 def log_login_attempt(username, action, ip_address, user_agent, status, admin_id=None):
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        tz = pytz.timezone("Asia/Kolkata")
-        now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-        
-        cursor.execute("""
-            INSERT INTO login_history (admin_id, username, action, ip_address, user_agent, status, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (admin_id, username, action, ip_address, user_agent, status, now))
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Error logging: {e}")
-        return False
+    return log_activity(username, action, ip_address, user_agent, status, admin_id)
 
 def get_login_history(limit=100):
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT id, username, action, ip_address, status, timestamp 
-            FROM login_history 
-            ORDER BY id DESC 
-            LIMIT ?
-        """, (limit,))
-        
-        history = cursor.fetchall()
-        conn.close()
-        
-        return [{"id": h[0], "username": h[1], "action": h[2], "ip_address": h[3], "status": h[4], "timestamp": h[5]} for h in history]
-    except Exception as e:
-        print(f"Error fetching history: {e}")
-        return []
+    return get_activity_log(limit)
 
 def get_current_sessions():
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT username, ip_address, timestamp 
-            FROM login_history 
-            WHERE action = 'login' AND status = 'success'
-            AND datetime(timestamp) >= datetime('now', '-30 minutes')
-            ORDER BY timestamp DESC
-        """)
-        
-        sessions = cursor.fetchall()
-        conn.close()
-        
-        return [{"username": s[0], "ip_address": s[1], "timestamp": s[2]} for s in sessions]
-    except Exception as e:
-        print(f"Error fetching sessions: {e}")
-        return []
+    return get_active_sessions()

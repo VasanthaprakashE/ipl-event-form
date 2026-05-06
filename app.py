@@ -1,12 +1,13 @@
 import os
 import sys
 import pandas as pd
-from flask import Flask, render_template, request, send_file, jsonify, session, redirect, url_for, flash
+from flask import Flask, render_template, request, send_file, jsonify, session, redirect, url_for, flash, Response
 from functools import wraps
 from collections import defaultdict
 from datetime import datetime, timedelta
 import io
 import logging
+import traceback
 
 # Add current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -20,7 +21,7 @@ from db import (
 )
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -87,6 +88,10 @@ def home():
         logger.error(f"Home error: {e}")
         return f"Error: {str(e)}", 500
 
+import threading
+import json
+import os
+
 @app.route("/submit", methods=["POST"])
 def submit():
     try:
@@ -95,23 +100,59 @@ def submit():
         mobile = request.form.get("mobile", "").strip()
         follow_status = request.form.get("follow_status", "").strip()
 
-        if not name or not insta or not mobile or not follow_status:
+        if not all([name, insta, mobile, follow_status]):
             return "All fields are required", 400
-
+        
         if not mobile.isdigit() or len(mobile) != 10:
-            return "Invalid mobile number. Must be 10 digits.", 400
+            return "Invalid mobile number", 400
 
         name = name.replace('<', '&lt;').replace('>', '&gt;')
         insta = insta.lstrip('@').replace('<', '&lt;').replace('>', '&gt;')
+
+        # Save to local JSON file immediately (instant backup)
+        backup_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup_entries.json")
         
-        insert_data(name, insta, mobile, follow_status)
-        logger.info(f"✅ New submission: {name[:20]}")
+        try:
+            # Read existing backups
+            if os.path.exists(backup_file):
+                with open(backup_file, 'r') as f:
+                    backups = json.load(f)
+            else:
+                backups = []
+            
+            # Add new entry
+            from datetime import datetime
+            backups.append({
+                "name": name,
+                "insta": insta,
+                "mobile": mobile,
+                "follow_status": follow_status,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            
+            # Write back
+            with open(backup_file, 'w') as f:
+                json.dump(backups, f)
+                
+        except Exception as e:
+            logger.error(f"Backup write failed: {e}")
+
+        # Save to Google Sheets in background
+        def save_to_sheets():
+            try:
+                insert_data(name, insta, mobile, follow_status)
+            except Exception as e:
+                logger.error(f"Google Sheets save failed: {e}")
         
+        thread = threading.Thread(target=save_to_sheets)
+        thread.daemon = True
+        thread.start()
+
         return render_template("success.html")
-    
+
     except Exception as e:
         logger.error(f"Submit error: {e}")
-        return f"Error: {str(e)}", 500
+        return "Something went wrong. Please try again.", 500
 
 @app.route("/login", methods=['GET', 'POST'])
 def login():
@@ -175,7 +216,16 @@ def admin():
         data = get_all_entries()
         
         if not data:
-            return render_template("admin.html", entries=[], yes=0, no=0, total=0, daily={}, username=session.get('username'))
+            return render_template(
+                "admin.html", 
+                entries=[], 
+                yes=0, 
+                no=0, 
+                total=0, 
+                daily={}, 
+                username=session.get('username'),
+                role=session.get('role')
+            )
         
         yes_count = sum(1 for d in data if d[4] == "yes")
         no_count = sum(1 for d in data if d[4] == "no")
@@ -214,7 +264,8 @@ def admin():
             no=no_count,
             total=len(data),
             daily=dict(daily),
-            username=session.get('username')
+            username=session.get('username'),
+            role=session.get('role')
         )
     
     except Exception as e:
@@ -224,49 +275,78 @@ def admin():
 @app.route("/login-history")
 @login_required
 def login_history():
+    user_role = session.get('role')
+    username = session.get('username')
+    
+    if user_role != 'super_admin':
+        logger.warning(f"❌ Access denied: {username}")
+        flash('❌ Access denied! Only Super Admins can view login history.', 'error')
+        return redirect(url_for('admin'))
+    
     history = get_login_history(100)
     active_sessions = get_current_sessions()
-    return render_template('login_history.html', history=history, active_sessions=active_sessions, username=session.get('username'))
+    
+    return render_template(
+        'login_history.html', 
+        history=history, 
+        active_sessions=active_sessions, 
+        username=session.get('username'),
+        role=session.get('role')
+    )
+
+# ============ EXPORT ROUTE - RESPECTS DATE RANGE ============
 
 @app.route("/export")
 @login_required
 def export():
+    """Export data respecting the date range filter"""
     try:
         from_date = request.args.get("from", "")
         to_date = request.args.get("to", "")
         
+        logger.info(f"Export requested - From: {from_date}, To: {to_date}")
+        
         data = get_all_entries()
         
-        if not data:
-            df = pd.DataFrame(columns=["ID", "Name", "Instagram", "Mobile", "Status", "Created At"])
-        else:
-            filtered_data = []
-            for d in data:
-                date_str = str(d[5])[:10] if d[5] else ""
-                if from_date and to_date:
-                    if from_date <= date_str <= to_date:
-                        filtered_data.append(d)
-                else:
-                    filtered_data.append(d)
+        # Create CSV content
+        csv_lines = ["ID,Name,Instagram,Mobile,Status,Created At"]
+        exported_count = 0
+        
+        for row in data:
+            # Get date from created_at (index 5)
+            date_str = str(row[5])[:10] if row[5] else ""
             
-            df = pd.DataFrame(filtered_data, columns=["ID", "Name", "Instagram", "Mobile", "Status", "Created At"])
+            # Apply date filter if provided
+            if from_date and to_date:
+                if date_str >= from_date and date_str <= to_date:
+                    status_text = "Follower" if row[4] == "yes" else "Non-Follower"
+                    csv_lines.append(f"{row[0]},{row[1]},{row[2]},{row[3]},{status_text},{row[5]}")
+                    exported_count += 1
+            else:
+                # No date filter - export all
+                status_text = "Follower" if row[4] == "yes" else "Non-Follower"
+                csv_lines.append(f"{row[0]},{row[1]},{row[2]},{row[3]},{status_text},{row[5]}")
+                exported_count += 1
         
-        output = io.BytesIO()
-        df.to_excel(output, index=False, engine='openpyxl')
-        output.seek(0)
+        csv_content = "\n".join(csv_lines)
         
-        filename = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        # Generate filename
+        if from_date and to_date:
+            filename = f"ipl_data_{from_date}_to_{to_date}.csv"
+        else:
+            filename = f"ipl_data_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
-        return send_file(
-            output,
-            download_name=filename,
-            as_attachment=True,
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        logger.info(f"Export successful: {exported_count} records to {filename}")
+        
+        return Response(
+            csv_content,
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
     
     except Exception as e:
         logger.error(f"Export error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return f"Error: {str(e)}", 500
 
 @app.route("/api/filtered-data")
 @login_required
@@ -325,6 +405,7 @@ def api_filtered_data():
         })
     
     except Exception as e:
+        logger.error(f"API error: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/health")

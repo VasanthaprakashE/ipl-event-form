@@ -16,7 +16,11 @@
     <div class="header-title">🏏 IPL EVENT DASHBOARD</div>
     <div class="header-controls">
         <span class="welcome-text">👋 Welcome, {{ username }}</span>
-        <a href="{{ url_for('login_history') }}" class="history-btn">📜 Login History</a>
+        
+        {% if role == 'super_admin' %}
+            <a href="{{ url_for('login_history') }}" class="history-btn">📜 Login History</a>
+        {% endif %}
+        
         <a href="{{ url_for('logout') }}" class="logout-btn">🚪 Logout</a>
         <button id="refreshBtn" class="refresh-btn">🔄 Refresh</button>
         <label class="auto-refresh-label">
@@ -84,26 +88,11 @@
                     <input type="text" id="searchInput" placeholder="Search by name, mobile or Instagram...">
                     <button id="clearSearch" class="clear-search">✕</button>
                 </div>
-                <div class="export-wrapper">
-                    <button id="exportBtn" class="export-btn">📊 Export to Excel</button>
-                    <div class="export-options" id="exportOptions">
-                        <div class="export-header">
-                            <strong>Export Options</strong>
-                            <button id="closeExport" class="close-export">✕</button>
-                        </div>
-                        <div class="export-body">
-                            <div class="export-option">
-                                <label>📅 Filter by date range:</label>
-                                <input type="date" id="exportFromDate">
-                                <input type="date" id="exportToDate">
-                            </div>
-                            <div class="export-actions">
-                                <button id="exportCurrentView" class="export-option-btn">Export Current View</button>
-                                <button id="exportAllData" class="export-option-btn primary">Export All Data</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                
+                <!-- WORKING EXPORT BUTTON - Respects Date Range -->
+                <button id="exportRangeBtn" class="export-btn" style="background: #28a745;">
+                    📊 Export Current Range
+                </button>
             </div>
         </div>
         

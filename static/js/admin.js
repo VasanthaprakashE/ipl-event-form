@@ -5,6 +5,7 @@ let currentSearchTerm = "";
 let currentDateFilter = { from: null, to: null };
 
 document.addEventListener("DOMContentLoaded", () => {
+    console.log("Admin JS loaded");
     initializeCharts();
     attachEventListeners();
     updateVisibleCount();
@@ -13,7 +14,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function initializeCharts() {
     const pieCanvas = document.getElementById("pieChart");
-    if (pieCanvas) {
+    if (pieCanvas && typeof YES_COUNT !== 'undefined') {
         charts.pie = new Chart(pieCanvas, {
             type: "doughnut",
             data: {
@@ -44,7 +45,7 @@ function initializeCharts() {
     }
     
     const dailyCanvas = document.getElementById("dailyChart");
-    if (dailyCanvas && Object.keys(DAILY_DATA).length > 0) {
+    if (dailyCanvas && DAILY_DATA && Object.keys(DAILY_DATA).length > 0) {
         const labels = Object.keys(DAILY_DATA).sort();
         const followers = labels.map(d => DAILY_DATA[d]?.yes || 0);
         const nonFollowers = labels.map(d => DAILY_DATA[d]?.no || 0);
@@ -95,22 +96,8 @@ function attachEventListeners() {
         document.getElementById("toggleFilters").textContent = isVisible ? "Show Filters ▼" : "Hide Filters ▲";
     });
     
-    const exportBtn = document.getElementById("exportBtn");
-    const exportOptions = document.getElementById("exportOptions");
-    if (exportBtn && exportOptions) {
-        exportBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            exportOptions.style.display = exportOptions.style.display === "flex" ? "none" : "flex";
-        });
-        document.getElementById("closeExport")?.addEventListener("click", () => exportOptions.style.display = "none");
-        document.getElementById("exportCurrentView")?.addEventListener("click", exportCurrentView);
-        document.getElementById("exportAllData")?.addEventListener("click", exportAllData);
-        document.addEventListener("click", (e) => {
-            if (!exportBtn.contains(e.target) && !exportOptions.contains(e.target)) {
-                exportOptions.style.display = "none";
-            }
-        });
-    }
+    // Export button - respects date range
+    document.getElementById("exportRangeBtn")?.addEventListener("click", exportWithDateRange);
 }
 
 async function refreshDashboard() {
@@ -122,14 +109,16 @@ async function refreshDashboard() {
         const toDate = document.getElementById("dashboardToDate")?.value || "";
         const search = document.getElementById("searchInput")?.value || "";
         
-        let url = `/api/filtered-data?${new URLSearchParams({ from: fromDate, to: toDate, search })}`;
+        let url = `/api/filtered-data?from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}&search=${encodeURIComponent(search)}`;
         const response = await fetch(url);
         const data = await response.json();
         
         updateDashboard(data);
         document.getElementById("lastUpdatedTime").textContent = `📅 Last updated: ${new Date().toLocaleTimeString()}`;
+        showNotification("Dashboard refreshed!", "success");
     } catch (error) {
         console.error("Refresh failed:", error);
+        showNotification("Refresh failed!", "error");
     } finally {
         refreshBtn.classList.remove("rotating");
     }
@@ -148,17 +137,19 @@ function updateDashboard(data) {
         row.setAttribute("data-status", entry.status);
         row.setAttribute("data-date", entry.date);
         row.innerHTML = `
-            <td>${entry.id}</td>
+            <td>${escapeHtml(String(entry.id))}</td>
             <td>${escapeHtml(entry.name)}</td>
             <td>${escapeHtml(entry.instagram)}</td>
-            <td>${entry.mobile}</td>
+            <td>${escapeHtml(entry.mobile)}</td>
             <td class="${entry.status === 'yes' ? 'yes' : 'no'}">${entry.status === 'yes' ? '✓ Follower' : '✗ Non-Follower'}</td>
-            <td>${entry.time}</td>
+            <td>${escapeHtml(entry.time)}</td>
         `;
     });
     
-    if (charts.pie) charts.pie.data.datasets[0].data = [data.yes, data.no];
-    if (charts.pie) charts.pie.update();
+    if (charts.pie) {
+        charts.pie.data.datasets[0].data = [data.yes, data.no];
+        charts.pie.update();
+    }
     
     if (charts.daily && data.daily) {
         const labels = Object.keys(data.daily).sort();
@@ -173,14 +164,17 @@ function updateDashboard(data) {
 
 function handleSearch(e) {
     currentSearchTerm = e.target.value.toLowerCase();
-    document.getElementById("clearSearch").style.display = currentSearchTerm ? "flex" : "none";
+    const clearBtn = document.getElementById("clearSearch");
+    if (clearBtn) clearBtn.style.display = currentSearchTerm ? "flex" : "none";
     filterTable();
 }
 
 function clearSearch() {
-    document.getElementById("searchInput").value = "";
+    const searchInput = document.getElementById("searchInput");
+    if (searchInput) searchInput.value = "";
     currentSearchTerm = "";
-    document.getElementById("clearSearch").style.display = "none";
+    const clearBtn = document.getElementById("clearSearch");
+    if (clearBtn) clearBtn.style.display = "none";
     filterTable();
 }
 
@@ -210,8 +204,10 @@ function updateVisibleCount(visible = null) {
     if (visible === null) {
         visible = document.querySelectorAll("#tableBody tr:not([style*='display: none'])").length;
     }
-    document.getElementById("visibleCount").textContent = visible;
-    document.getElementById("noResults").style.display = visible === 0 ? "block" : "none";
+    const visibleSpan = document.getElementById("visibleCount");
+    if (visibleSpan) visibleSpan.textContent = visible;
+    const noResults = document.getElementById("noResults");
+    if (noResults) noResults.style.display = visible === 0 ? "block" : "none";
 }
 
 function applyDateFilter() {
@@ -233,9 +229,11 @@ function toggleAutoRefresh(e) {
     isAutoRefreshEnabled = e.target.checked;
     if (isAutoRefreshEnabled) {
         autoRefreshInterval = setInterval(() => { if (!document.hidden) refreshDashboard(); }, 30000);
+        showNotification("Auto-refresh enabled (30s)", "success");
     } else if (autoRefreshInterval) {
         clearInterval(autoRefreshInterval);
         autoRefreshInterval = null;
+        showNotification("Auto-refresh disabled", "info");
     }
     localStorage.setItem("autoRefresh", isAutoRefreshEnabled);
 }
@@ -247,41 +245,95 @@ function loadSavedPreferences() {
     }
 }
 
-function exportCurrentView() {
-    const rows = document.querySelectorAll("#tableBody tr:not([style*='display: none'])");
-    if (!rows.length) return alert("No data to export");
+// ============ EXPORT FUNCTION - RESPECTS DATE RANGE ============
+
+function exportWithDateRange() {
+    const fromDate = document.getElementById("dashboardFromDate").value;
+    const toDate = document.getElementById("dashboardToDate").value;
     
-    const csv = [["ID", "Name", "Instagram", "Mobile", "Status", "Time"]];
-    rows.forEach(row => {
-        csv.push([
-            row.cells[0]?.textContent || "",
-            row.cells[1]?.textContent || "",
-            row.cells[2]?.textContent || "",
-            row.cells[3]?.textContent || "",
-            row.cells[4]?.textContent || "",
-            row.cells[5]?.textContent || ""
-        ]);
-    });
+    let url = '/export?';
+    if (fromDate && toDate) {
+        url += `from=${fromDate}&to=${toDate}`;
+        showNotification(`Exporting data from ${fromDate} to ${toDate}...`, "info");
+    } else {
+        showNotification("Exporting all data...", "info");
+    }
     
-    const blob = new Blob([csv.map(row => row.join(",")).join("\n")], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `export_${new Date().toISOString().slice(0,19)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    document.getElementById("exportOptions").style.display = "none";
+    console.log("Export URL:", url);
+    
+    // Open in new tab to download
+    window.open(url, '_blank');
+    
+    setTimeout(() => {
+        showNotification("✅ Export started! Check your downloads folder.", "success");
+    }, 1000);
 }
 
-function exportAllData() {
-    const from = document.getElementById("exportFromDate")?.value || "";
-    const to = document.getElementById("exportToDate")?.value || "";
-    window.open(`/export?${new URLSearchParams({ from, to })}`, "_blank");
-    document.getElementById("exportOptions").style.display = "none";
+function showNotification(message, type) {
+    const notification = document.createElement("div");
+    notification.textContent = message;
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 20px;
+        background: ${type === "success" ? "#28a745" : type === "error" ? "#dc3545" : "#17a2b8"};
+        color: white;
+        border-radius: 8px;
+        font-weight: bold;
+        z-index: 10000;
+        animation: slideIn 0.3s ease;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    `;
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        notification.style.animation = "slideOut 0.3s ease";
+        setTimeout(() => notification.remove(), 300);
+    }, 3000);
 }
 
 function escapeHtml(text) {
+    if (!text) return "";
     const div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
 }
+
+// Add CSS animations
+const style = document.createElement("style");
+style.textContent = `
+    @keyframes slideIn {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    @keyframes slideOut {
+        from {
+            transform: translateX(0);
+            opacity: 1;
+        }
+        to {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+    }
+    
+    .rotating {
+        animation: rotate 0.5s ease-in-out;
+    }
+    
+    @keyframes rotate {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+`;
+document.head.appendChild(style);
+
+console.log("Admin JS fully loaded");

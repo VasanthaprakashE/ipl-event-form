@@ -144,6 +144,21 @@
     </style>
 </head>
 <body>
+
+      <div class="header">
+    <h1>🔐 Login & Session History</h1>
+    <div class="nav-buttons">
+        <span class="badge badge-superadmin">👑 Super Admin Access</span>
+        <a href="{{ url_for('admin') }}" class="btn btn-primary">← Back to Dashboard</a>
+        <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+    </div>
+</div>
+
+<!-- Add role info banner -->
+<div class="alert alert-info" style="background: #d1ecf1; color: #0c5460; padding: 10px 15px; border-radius: 8px; margin-bottom: 20px;">
+    👑 You are viewing as <strong>Super Administrator</strong> - Full access to all login history
+</div>
+
     <div class="container">
         <div class="header">
             <h1>🔐 Login & Session History</h1>
